@@ -226,8 +226,8 @@ class MCPClient:
                                     return json_data
                                 else:
                                     # Format as HTML table for structured display
-                                    # return json_to_html_table(json_data)
-                                    return json_data
+                                    return json_to_html_table(json_data)
+                                    # return json_data
                             else:
                                 # Plain text/HTML response; return as-is string so UI can render directly
                                 return content_text
