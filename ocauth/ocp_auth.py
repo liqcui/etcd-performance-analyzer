@@ -28,6 +28,8 @@ class OCPAuth:
         self.token = None
         self.ca_cert_path = None
         self.logger = logging.getLogger(__name__)
+        # Store full discovery details for building fallbacks
+        self.prometheus_info: Optional[Dict[str, Any]] = None
         
     async def initialize(self) -> bool:
         """Initialize Kubernetes client and discover services"""
@@ -42,6 +44,7 @@ class OCPAuth:
             # Discover Prometheus service
             prometheus_info = await self._discover_prometheus()
             if prometheus_info:
+                self.prometheus_info = prometheus_info
                 self.prometheus_url = prometheus_info['url']
                 self.logger.info(f"Discovered Prometheus at: {self.prometheus_url}")
                 return True
@@ -642,10 +645,36 @@ class OCPAuth:
     
     def get_prometheus_config(self) -> Dict[str, Any]:
         """Get Prometheus connection configuration"""
+        # Environment overrides
+        env_url = os.getenv('PROMETHEUS_URL') or os.getenv('OCP_PROMETHEUS_URL')
+        env_verify = os.getenv('PROMETHEUS_VERIFY')
+        if env_url:
+            self.logger.info(f"Using PROMETHEUS_URL override: {env_url}")
+        base_url = env_url or self.prometheus_url
+        verify_value: Any = self.ca_cert_path if self.ca_cert_path else False
+        if env_verify is not None:
+            # Accept 'true'/'false' or a path to CA file
+            env_verify_lower = env_verify.lower()
+            if env_verify_lower in ('true', '1', 'yes'):
+                verify_value = True
+            elif env_verify_lower in ('false', '0', 'no'):
+                verify_value = False
+            else:
+                verify_value = env_verify  # treat as CA file path
+
+        # Fallback URLs from env or discovery
+        fallback_urls: list[str] = []
+        env_fallbacks = os.getenv('PROMETHEUS_FALLBACK_URLS')
+        if env_fallbacks:
+            fallback_urls.extend([u.strip() for u in env_fallbacks.split(',') if u.strip()])
+
+        fallback_urls.extend(self._build_fallback_urls())
+
         config = {
-            'url': self.prometheus_url,
+            'url': base_url,
             'headers': self.get_auth_headers(),
-            'verify': self.ca_cert_path if self.ca_cert_path else False
+            'verify': verify_value,
+            'fallback_urls': fallback_urls,
         }
         
         # Log configuration for debugging (without sensitive data)
@@ -656,3 +685,39 @@ class OCPAuth:
         
         self.logger.debug(f"Prometheus config: {config_debug}")
         return config
+
+    def _build_fallback_urls(self) -> list:
+        """Construct likely fallback Prometheus URLs when the route is unreachable."""
+        fallbacks: list[str] = []
+        try:
+            info = self.prometheus_info or {}
+            namespace = info.get('namespace')
+            access_method = info.get('access_method')
+            service_name = info.get('service_name') or 'prometheus-k8s'
+            port = info.get('port') or 9090
+
+            # If initial access is via route, prefer cluster-internal service DNS
+            if namespace:
+                fallbacks.append(f"http://{service_name}.{namespace}.svc.cluster.local:{port}")
+                fallbacks.append(f"http://{service_name}.{namespace}.svc:{port}")
+
+            # Generic common namespaces if discovery context missing
+            if not namespace:
+                for ns in ['openshift-monitoring', 'openshift-user-workload-monitoring', 'monitoring']:
+                    fallbacks.append(f"http://prometheus-k8s.{ns}.svc.cluster.local:9090")
+
+            # If discovery returned direct pod or nodeport, include that URL too
+            if access_method in ('nodeport', 'loadbalancer', 'direct_pod') and info.get('url'):
+                fallbacks.append(info['url'])
+
+        except Exception as e:
+            self.logger.debug(f"Failed building fallback URLs: {e}")
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for u in fallbacks:
+            if u and u not in seen:
+                seen.add(u)
+                unique.append(u)
+        return unique

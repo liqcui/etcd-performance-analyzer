@@ -22,6 +22,7 @@ class PrometheusBaseQuery:
         self.base_url = prometheus_config['url'].rstrip('/')
         self.headers = prometheus_config.get('headers', {})
         self.verify_ssl = prometheus_config.get('verify', False)
+        self.fallback_urls: List[str] = prometheus_config.get('fallback_urls', [])
         self.logger = logging.getLogger(__name__)
         self.session = None
         
@@ -31,6 +32,8 @@ class PrometheusBaseQuery:
         # Log configuration for debugging
         self.logger.info(f"Prometheus config - URL: {self.base_url}, SSL verify: {self.verify_ssl}")
         self.logger.debug(f"Headers: {list(self.headers.keys())}")
+        if self.fallback_urls:
+            self.logger.info(f"Configured fallback URLs: {self.fallback_urls}")
     
     def _create_ssl_context(self) -> Union[ssl.SSLContext, bool, None]:
         """Create proper SSL context for aiohttp"""
@@ -181,42 +184,12 @@ class PrometheusBaseQuery:
                     }
         except aiohttp.ClientError as e:
             self.logger.error(f"HTTP client error executing instant query: {e}")
-            # One-time SSL-disabled fallback (useful for self-signed routes)
-            try:
-                fallback_connector = aiohttp.TCPConnector(ssl=False)
-                async with aiohttp.ClientSession(
-                    headers=self.headers,
-                    connector=fallback_connector,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                    trust_env=True,
-                ) as fallback_session:
-                    async with fallback_session.get(url, params=params) as response:
-                        response_text = await response.text()
-                        if response.status == 200:
-                            try:
-                                data = json.loads(response_text)
-                                return {
-                                    'status': 'success',
-                                    'data': data.get('data', {}),
-                                    'query': query,
-                                    'timestamp': time or datetime.now(self.timezone),
-                                    'note': 'ssl_disabled_fallback'
-                                }
-                            except json.JSONDecodeError:
-                                pass
-                        return {
-                            'status': 'error',
-                            'error': f"HTTP {response.status}: {response_text}",
-                            'query': query,
-                            'response_status': response.status,
-                            'note': 'ssl_disabled_fallback'
-                        }
-            except Exception as fe:
-                return {
-                    'status': 'error',
-                    'error': f"HTTP client error: {str(e)}; fallback failed: {fe}",
-                    'query': query
-                }
+            # Try fallbacks on DNS/connection issues
+            fallback_result = await self._try_fallbacks('/api/v1/query', params, time)
+            if fallback_result:
+                return fallback_result
+            # As a last resort, one-shot SSL-disabled attempt against primary URL
+            return await self._ssl_disabled_attempt(url, params, time)
         except Exception as e:
             self.logger.error(f"Unexpected error executing instant query: {e}")
             return {
@@ -285,44 +258,12 @@ class PrometheusBaseQuery:
                     }
         except aiohttp.ClientError as e:
             self.logger.error(f"HTTP client error executing range query: {e}")
-            # One-time SSL-disabled fallback
-            try:
-                fallback_connector = aiohttp.TCPConnector(ssl=False)
-                async with aiohttp.ClientSession(
-                    headers=self.headers,
-                    connector=fallback_connector,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                    trust_env=True,
-                ) as fallback_session:
-                    async with fallback_session.get(url, params=params) as response:
-                        response_text = await response.text()
-                        if response.status == 200:
-                            try:
-                                data = json.loads(response_text)
-                                return {
-                                    'status': 'success',
-                                    'data': data.get('data', {}),
-                                    'query': query,
-                                    'start': start,
-                                    'end': end,
-                                    'step': step,
-                                    'note': 'ssl_disabled_fallback'
-                                }
-                            except json.JSONDecodeError:
-                                pass
-                        return {
-                            'status': 'error',
-                            'error': f"HTTP {response.status}: {response_text}",
-                            'query': query,
-                            'response_status': response.status,
-                            'note': 'ssl_disabled_fallback'
-                        }
-            except Exception as fe:
-                return {
-                    'status': 'error',
-                    'error': f"HTTP client error: {str(e)}; fallback failed: {fe}",
-                    'query': query
-                }
+            # Try fallbacks on DNS/connection issues
+            fallback_result = await self._try_fallbacks('/api/v1/query_range', params)
+            if fallback_result:
+                return fallback_result
+            # As a last resort, one-shot SSL-disabled attempt against primary URL
+            return await self._ssl_disabled_attempt(url, params)
         except Exception as e:
             self.logger.error(f"Unexpected error executing range query: {e}")
             return {
@@ -335,6 +276,78 @@ class PrometheusBaseQuery:
         """Execute range query with duration string"""
         start_time, end_time = self._get_time_range(duration)
         return await self.query_range(query, start_time, end_time)
+
+    async def _ssl_disabled_attempt(self, url: str, params: Dict[str, Any], time: Optional[datetime] = None) -> Dict[str, Any]:
+        """Attempt a single request with SSL disabled to handle self-signed certs."""
+        try:
+            fallback_connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(
+                headers=self.headers,
+                connector=fallback_connector,
+                timeout=aiohttp.ClientTimeout(total=60),
+                trust_env=True,
+            ) as fallback_session:
+                async with fallback_session.get(url, params=params) as response:
+                    response_text = await response.text()
+                    if response.status == 200:
+                        try:
+                            data = json.loads(response_text)
+                            result: Dict[str, Any] = {
+                                'status': 'success',
+                                'data': data.get('data', {}),
+                            }
+                            if 'query' in params:
+                                result['query'] = params['query']
+                            if time:
+                                result['timestamp'] = time or datetime.now(self.timezone)
+                            result['note'] = 'ssl_disabled_fallback'
+                            return result
+                        except json.JSONDecodeError:
+                            pass
+                    return {
+                        'status': 'error',
+                        'error': f"HTTP {response.status}: {response_text}",
+                        'response_status': response.status,
+                        'note': 'ssl_disabled_fallback'
+                    }
+        except Exception as fe:
+            return {
+                'status': 'error',
+                'error': f"Fallback attempt failed: {fe}",
+            }
+
+    async def _try_fallbacks(self, api_path: str, params: Dict[str, Any], time: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+        """Try configured fallback URLs sequentially when primary fails (e.g., DNS)."""
+        if not self.fallback_urls:
+            return None
+        for fb in self.fallback_urls:
+            try:
+                url = f"{fb.rstrip('/')}{api_path}"
+                self.logger.warning(f"Trying Prometheus fallback URL: {fb}")
+                async with self.session.get(url, params=params) as response:
+                    response_text = await response.text()
+                    if response.status == 200:
+                        try:
+                            data = json.loads(response_text)
+                            result: Dict[str, Any] = {
+                                'status': 'success',
+                                'data': data.get('data', {}),
+                            }
+                            if 'query' in params:
+                                result['query'] = params['query']
+                            if time:
+                                result['timestamp'] = time or datetime.now(self.timezone)
+                            result['note'] = f'fallback:{fb}'
+                            # Switch base_url to the working fallback for subsequent queries
+                            self.base_url = fb.rstrip('/')
+                            return result
+                        except json.JSONDecodeError:
+                            pass
+            except aiohttp.ClientError as ce:
+                self.logger.warning(f"Fallback URL failed: {fb} error={ce}")
+            except Exception as ex:
+                self.logger.warning(f"Fallback URL unexpected error: {fb} error={ex}")
+        return None
     
     def _extract_metric_values(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract metric values from Prometheus result"""
