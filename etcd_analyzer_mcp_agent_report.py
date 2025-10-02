@@ -360,12 +360,15 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
             )
             
             state["performance_report"] = report
-            state["messages"].append(AIMessage(content="Report generated"))
+            state["messages"].append(AIMessage(content="Performance report generated successfully"))
+            logger.info("Performance report generation completed")
             
         except Exception as e:
             error_msg = f"Error generating report: {str(e)}"
             state["error"] = error_msg
             state["messages"].append(AIMessage(content=error_msg))
+            logger.error(error_msg)
+            logger.error(f"Traceback: {traceback.format_exc()}")
             
         return state
 
@@ -458,34 +461,37 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
                 for node_name, node_state in event.items():
                     final_state = node_state
                     
-                    print(f"\n[{node_name.upper()}]")
+                    # Only print node transitions, not full status
+                    print(f"\n[{node_name.upper()}] ", end="")
                     
-                    # Display latest message
+                    # Display latest message inline
                     if node_state.get("messages"):
                         latest_msg = node_state["messages"][-1]
                         if isinstance(latest_msg, AIMessage):
-                            print(f"  Status: {latest_msg.content}")
+                            print(f"{latest_msg.content}")
+                    else:
+                        print("Processing...")
                     
                     # Display script analysis results
                     if node_name == "script_analysis" and node_state.get("script_analysis"):
-                        print(f"\n{'='*80}")
+                        print(f"\n{'='*100}")
                         print("SCRIPT-BASED ROOT CAUSE ANALYSIS")
-                        print(f"{'='*80}")
+                        print(f"{'='*100}")
                         self._print_script_analysis(node_state["script_analysis"])
                     
                     # Display AI analysis results
                     if node_name == "ai_analysis" and node_state.get("ai_analysis"):
-                        print(f"\n{'='*80}")
+                        print(f"\n{'='*100}")
                         print("AI-POWERED ROOT CAUSE ANALYSIS")
-                        print(f"{'='*80}")
+                        print(f"{'='*100}")
                         self._print_ai_analysis(node_state["ai_analysis"])
                     
-                    # Display final report
+                    # Display final report with full formatting
                     if node_name == "generate_report" and node_state.get("performance_report"):
-                        print(f"\n{'='*80}")
-                        print("PERFORMANCE REPORT")
-                        print(f"{'='*80}")
+                        print()  # Add newline before report
+                        # Print the full report which includes all formatted tables
                         print(node_state["performance_report"])
+                        print(f"\n{'='*100}")
             
             # Use final_state from the stream
             if final_state is None:
