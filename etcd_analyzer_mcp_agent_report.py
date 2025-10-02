@@ -451,9 +451,13 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
             print("ETCD PERFORMANCE ANALYSIS - STREAMING OUTPUT")
             print(f"{'='*100}\n")
             
-            # Stream through graph execution
+            final_state = None
+            
+            # Stream through graph execution using async iteration
             async for event in self.graph.astream(initial_state):
                 for node_name, node_state in event.items():
+                    final_state = node_state
+                    
                     print(f"\n[{node_name.upper()}]")
                     
                     # Display latest message
@@ -483,10 +487,9 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
                         print(f"{'='*80}")
                         print(node_state["performance_report"])
             
-            final_state = initial_state
-            for event in self.graph.stream(initial_state):
-                for node_name, node_state in event.items():
-                    final_state = node_state
+            # Use final_state from the stream
+            if final_state is None:
+                final_state = initial_state
             
             return {
                 "success": not bool(final_state.get("error")),
