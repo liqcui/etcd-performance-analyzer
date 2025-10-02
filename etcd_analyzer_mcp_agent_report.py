@@ -60,7 +60,7 @@ class AgentState(TypedDict):
     start_time: Optional[datetime]
     end_time: Optional[datetime]
 
-class OVNKAnalyzerMCPAgent:
+class etcdAnalyzerMCPAgent:
     """AI agent for etcd performance analysis using MCP server integration"""
     
     def __init__(self, mcp_server_url: str = "http://localhost:8000"):
@@ -488,10 +488,12 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
                     
                     # Display final report with full formatting
                     if node_name == "generate_report" and node_state.get("performance_report"):
-                        print()  # Add newline before report
+                        # Print separator before report
+                        logger.info("Displaying performance analysis results...")
+                        print(f"\n{'='*100}")
                         # Print the full report which includes all formatted tables
                         print(node_state["performance_report"])
-                        print(f"\n{'='*100}")
+                        print(f"{'='*100}\n")
             
             # Use final_state from the stream
             if final_state is None:
@@ -500,7 +502,9 @@ Focus on: Disk I/O, CPU, Network, Memory, Database maintenance"""
             return {
                 "success": not bool(final_state.get("error")),
                 "test_id": final_state.get("test_id"),
-                "error": final_state.get("error")
+                "error": final_state.get("error"),
+                "analysis_results": final_state.get("analysis_results"),
+                "performance_report": final_state.get("performance_report")
             }
             
         except Exception as e:
@@ -559,7 +563,7 @@ async def main():
     print("=" * 50)
     
     try:
-        agent = OVNKAnalyzerMCPAgent()
+        agent = etcdAnalyzerMCPAgent()
         
         mode = input("Select mode (1=Duration, 2=Time Range, default=1): ").strip() or "1"
         
