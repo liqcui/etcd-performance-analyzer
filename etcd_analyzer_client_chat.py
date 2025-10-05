@@ -17,7 +17,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional, AsyncGenerator
 
 # MCP and LangGraph imports
 from mcp import ClientSession
@@ -25,18 +24,13 @@ from mcp.client.streamable_http import streamablehttp_client
 
 # LangChain and LangGraph imports
 from langchain.tools import BaseTool
-from langchain.schema import BaseMessage
 from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationBufferMemory
 from langgraph.prebuilt import create_react_agent
-from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from dotenv import load_dotenv
 from elt.etcd_analyzer_elt_json2table import json_to_html_table
 
-
 import warnings
-# Suppress urllib3 deprecation warning triggered by kubernetes client
 warnings.filterwarnings(
     "ignore",
     category=DeprecationWarning,
@@ -52,7 +46,6 @@ class _SuppressInvalidHttp(logging.Filter):
         msg = record.getMessage()
         return "Invalid HTTP request received" not in msg
 
-# Suppress noisy warnings from various Uvicorn HTTP implementations
 logging.getLogger("uvicorn").addFilter(_SuppressInvalidHttp())
 logging.getLogger("uvicorn.error").addFilter(_SuppressInvalidHttp())
 logging.getLogger("uvicorn.access").addFilter(_SuppressInvalidHttp())
@@ -60,18 +53,15 @@ logging.getLogger("uvicorn.protocols.http.h11_impl").addFilter(_SuppressInvalidH
 logging.getLogger("uvicorn.protocols.http.httptools_impl").addFilter(_SuppressInvalidHttp())
 
 class ChatRequest(BaseModel):
-    """Chat request model"""
     message: str = Field(..., description="User message to process")
     conversation_id: str = Field(default="default", description="Conversation identifier")
     system_prompt: Optional[str] = Field(default=None, description="Optional system prompt override")
 
 class SystemPromptRequest(BaseModel):
-    """System prompt configuration request"""
     system_prompt: str = Field(..., description="System prompt to set")
     conversation_id: str = Field(default="default", description="Conversation identifier")
 
 class HealthResponse(BaseModel):
-    """Health check response model"""
     status: str = Field(..., description="Health status")
     timestamp: str = Field(..., description="Check timestamp")
     details: Dict[str, Any] = Field(default_factory=dict, description="Additional details")
@@ -84,17 +74,13 @@ class MCPTool(BaseTool):
     mcp_client: 'MCPClient'
     
     def __init__(self, name: str, description: str, mcp_client: 'MCPClient'):
-        # Initialize BaseTool (pydantic model) with fields
         super().__init__(name=name, description=description, mcp_client=mcp_client)
     
     def _run(self, **kwargs) -> str:
-        """Synchronous run - not used"""
         raise NotImplementedError("Use async version")
     
     async def _arun(self, **kwargs) -> str:
-        """Asynchronous tool execution"""
         try:
-            # Unwrap nested 'kwargs' that some agents pass, and drop None values
             params = kwargs.get('kwargs', kwargs) or {}
             if isinstance(params, dict):
                 params = {k: v for k, v in params.items() if v is not None}
@@ -114,21 +100,11 @@ class MCPClient:
         self.langchain_tools: List[MCPTool] = []
     
     async def connect(self):
-        """Connect to MCP server and initialize tools"""
         try:
             url = f"{self.mcp_server_url}/mcp"
-            
-            # Connect to the server using Streamable HTTP
-            async with streamablehttp_client(url) as (
-                read_stream,
-                write_stream,
-                get_session_id,
-            ):
+            async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
                 async with ClientSession(read_stream, write_stream) as session:
-                    # Initialize the connection
                     await session.initialize()
- 
-                    # Get session id once connection established
                     session_id = get_session_id()
                     logger.info(f"Session ID: {session_id}")
                     tools_result = await session.list_tools()
@@ -136,7 +112,6 @@ class MCPClient:
             
                     for tool in tools_result.tools:
                         logger.info(f"Tool discovered: {tool.name}")
-                        # Handle schema that may be a dict or a Pydantic model
                         input_schema = {}
                         try:
                             if tool.inputSchema:
@@ -165,7 +140,6 @@ class MCPClient:
             return False
 
     def _create_langchain_tools(self):
-        """Create LangChain tool wrappers for MCP tools"""
         self.langchain_tools = []
         for tool_info in self.available_tools:
             langchain_tool = MCPTool(
@@ -176,14 +150,9 @@ class MCPClient:
             self.langchain_tools.append(langchain_tool)
     
     async def call_tool(self, tool_name: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Call an MCP tool with parameters"""
         try:
             url = f"{self.mcp_server_url}/mcp"
-            async with streamablehttp_client(url) as (
-                read_stream,
-                write_stream,
-                get_session_id,
-            ):
+            async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
                 try:
                     async with ClientSession(read_stream, write_stream) as session:
                         await session.initialize()
@@ -191,73 +160,44 @@ class MCPClient:
                             logger.info(f"Session ID in call_tool: {get_session_id()}")
                         logger.info(f"Calling tool {tool_name} with params {params}")
 
-                        # Pass parameters directly according to the tool's input schema
                         result = await session.call_tool(tool_name, params or {})
-                        # logger.info(f"Tool {tool_name} result is: {result}")
 
-                        if not result.content:
-                            logger.warning(f"Tool {tool_name} returned empty content")
+                        if not result.content or len(result.content) == 0:
                             return {"error": "Empty response from tool", "tool": tool_name}
-
-                        if len(result.content) == 0:
-                            logger.warning(f"Tool {tool_name} returned no content items")
-                            return {"error": "No content items in response", "tool": tool_name}
 
                         content_text = result.content[0].text
                         if not content_text or content_text.strip() == "":
-                            logger.warning(f"Tool {tool_name} returned empty text content")
                             return {"error": "Empty text content from tool", "tool": tool_name}
 
-                        # Handle different response formats
                         content_text = content_text.strip()
 
-                        # If content is empty after stripping
-                        if not content_text:
-                            return {"error": "Empty response after trimming whitespace", "tool": tool_name}
-
-                        # Try to parse as JSON first only if it looks like JSON
                         try:
                             if content_text[:1] in ['{', '[']:
-                                
                                 json_data = json.loads(content_text)
-                                logger.info(f"json_data of {tool_name} in call_tool is: {json_data}")
-                                # Format etcd analyzer results appropriately
+                                logger.info(f"Parsed JSON from {tool_name}")
                                 if tool_name in ["get_server_health"]:
                                     return json_data
                                 else:
-                                    # Format as HTML table for structured display
                                     return json_to_html_table(json_data)
-                                    # return json_data
                             else:
-                                # Plain text/HTML response; return as-is string so UI can render directly
                                 return content_text
 
                         except json.JSONDecodeError as json_err:
-                            logger.error(
-                                f"Failed to parse JSON from tool {tool_name}. Content: '{content_text[:200]}...'"
-                            )
-                            logger.error(f"JSON decode error: {json_err}")
-
-                            # Check if it's a simple string response that should be JSON
+                            logger.error(f"Failed to parse JSON from tool {tool_name}")
                             if content_text.startswith('{') or content_text.startswith('['):
-                                # Looks like malformed JSON
                                 return {
                                     "error": f"Malformed JSON response: {str(json_err)}",
                                     "tool": tool_name,
                                     "raw_content": content_text[:500],
-                                    "content_type": "malformed_json",
                                 }
                             else:
-                                # Return as plain text response
                                 return {
                                     "result": content_text,
                                     "tool": tool_name,
                                     "content_type": "text",
-                                    "message": "Tool returned plain text instead of JSON",
                                 }
                 except Exception as e:
                     logger.error(f"MCP ClientSession error for tool {tool_name}: {e}")
-                    # Return structured error instead of raising to avoid ExceptionGroup on __aexit__
                     return {
                         "error": str(e),
                         "tool": tool_name,
@@ -272,18 +212,11 @@ class MCPClient:
             }
             
     async def check_mcp_connectivity_health(self):
-        """Check MCP server connectivity health"""
         try:
             url = f"{self.mcp_server_url}/mcp"
-
-            async with streamablehttp_client(url) as (
-                    read_stream,
-                    write_stream,
-                    get_session_id,
-            ):
+            async with streamablehttp_client(url) as (read_stream, write_stream, get_session_id):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
- 
                     session_id = get_session_id()
                     logger.info(f"Health check session ID: {session_id}")
                     if session_id:
@@ -310,27 +243,19 @@ class MCPClient:
         }
 
     async def check_etcd_analyzer_health(self) -> Dict[str, Any]:
-        """Check etcd analyzer server health via MCP tools"""
         try:
-            # Test basic connectivity first
             await self.connect()
             
-            # Try the server health check tool
-            health_tools = [
-                "get_server_health"
-            ]
-            
+            health_tools = ["get_server_health"]
             health_result = None
             tool_used = None
             
             for tool_name in health_tools:
-                # Check if tool exists in available tools
                 if any(tool["name"] == tool_name for tool in self.available_tools):
                     try:
                         logger.info(f"Trying health check with tool: {tool_name}")
                         health_result = await self.call_tool(tool_name, {})
                         
-                        # Check if we got a valid result
                         if (isinstance(health_result, dict) and 
                             "error" not in health_result and 
                             health_result):
@@ -344,7 +269,6 @@ class MCPClient:
                         logger.warning(f"Tool {tool_name} failed: {str(tool_error)}")
                         continue
             
-            # Analyze the health result
             if health_result and tool_used:
                 overall_health = health_result.get("status", "unknown")
                 collectors_initialized = health_result.get("collectors_initialized", False)
@@ -360,7 +284,6 @@ class MCPClient:
                     "health_details": health_result
                 }
             else:
-                # No tools worked, but MCP connection is established
                 return {
                     "status": "partial",
                     "etcd_analyzer_connection": "error",
@@ -386,10 +309,9 @@ class ChatBot:
     def __init__(self, mcp_client: MCPClient):
         self.mcp_client = mcp_client
         self.memory = MemorySaver()
-        self.conversations: Dict[str, CompiledStateGraph] = {}
-        self.conversation_system_prompts: Dict[str, str] = {}  # Store system prompts per conversation
+        self.conversations = {}
+        self.conversation_system_prompts = {}
         
-        # Default system prompt for etcd analysis
         self.default_system_prompt = """You are an expert OpenShift etcd performance analyst with deep knowledge of:
 - etcd cluster health monitoring and diagnostics
 - OpenShift cluster troubleshooting and performance optimization
@@ -425,23 +347,15 @@ Be thorough but concise, and always explain the business impact of technical iss
         )
 
     def set_system_prompt(self, conversation_id: str, system_prompt: str):
-        """Set system prompt for a specific conversation"""
         self.conversation_system_prompts[conversation_id] = system_prompt
-        # If conversation already exists, remove it to recreate with new system prompt
         if conversation_id in self.conversations:
             del self.conversations[conversation_id]
 
     def get_system_prompt(self, conversation_id: str) -> str:
-        """Get system prompt for a conversation"""
         return self.conversation_system_prompts.get(conversation_id, self.default_system_prompt)
 
-    def get_or_create_agent(self, conversation_id: str) -> CompiledStateGraph:
-        """Get or create a conversation agent with memory and system prompt"""
+    def get_or_create_agent(self, conversation_id: str):
         if conversation_id not in self.conversations:
-            # Get system prompt for this conversation
-            system_prompt = self.get_system_prompt(conversation_id)
-            
-            # Create agent with system prompt and memory
             agent = create_react_agent(
                 self.llm,
                 self.mcp_client.langchain_tools,
@@ -452,39 +366,28 @@ Be thorough but concise, and always explain the business impact of technical iss
         return self.conversations[conversation_id]
     
     async def chat_stream(self, message: str, conversation_id: str, system_prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """Stream chat response with proper message streaming that preserves tool results"""
+        """Stream chat response with proper message streaming"""
         try:
-            # Set system prompt if provided
             if system_prompt:
                 self.set_system_prompt(conversation_id, system_prompt)
             
             agent = self.get_or_create_agent(conversation_id)
-            
-            # Create thread config for this conversation
             config = {"configurable": {"thread_id": conversation_id}}
             
-            tool_results_sent = []  # Track tool results that have been sent
-            last_ai_content = ""    # Track AI content for proper streaming
+            tool_results_sent = set()
+            last_ai_content = ""
             
-            # Stream the response
-            # Always include system prompt as a system message to ensure instructions are applied
             system_prompt_effective = self.get_system_prompt(conversation_id)
             input_messages = [("system", system_prompt_effective), ("user", message)]
 
-            async for chunk in agent.astream(
-                {"messages": input_messages},
-                config=config
-            ):
-                # Process different types of chunks
+            async for chunk in agent.astream({"messages": input_messages}, config=config):
                 if "agent" in chunk:
                     agent_data = chunk["agent"]
                     if "messages" in agent_data:
                         for msg in agent_data["messages"]:
                             if hasattr(msg, 'content') and msg.content:
-                                # Stream AI content incrementally
                                 content = str(msg.content)
                                 
-                                # For AI messages, send them as streaming updates
                                 if content != last_ai_content:
                                     last_ai_content = content
                                     yield {
@@ -500,19 +403,15 @@ Be thorough but concise, and always explain the business impact of technical iss
                     if "messages" in tool_data:
                         for msg in tool_data["messages"]:
                             if hasattr(msg, 'content') and msg.content:
-                                # Format tool result for display
                                 try:
                                     content = msg.content
                                     
-                                    # Process different content types
                                     if isinstance(content, dict):
-                                        # For HTML tables, pass through directly
                                         if any(key in content for key in ['html', 'table', 'content']):
                                             formatted_content = content.get('html') or content.get('table') or content.get('content') or json.dumps(content, indent=2)
                                         else:
                                             formatted_content = json.dumps(content, indent=2)
                                     elif isinstance(content, str):
-                                        # Check if it's HTML table content
                                         if content.strip().startswith('<table') or content.strip().startswith('<!DOCTYPE') or '<html>' in content:
                                             formatted_content = content
                                         elif content[:1] in ['{', '[']:
@@ -526,10 +425,9 @@ Be thorough but concise, and always explain the business impact of technical iss
                                     else:
                                         formatted_content = str(content)
                                     
-                                    # Only send tool results once
                                     tool_result_id = hash(str(content))
                                     if tool_result_id not in tool_results_sent:
-                                        tool_results_sent.append(tool_result_id)
+                                        tool_results_sent.add(tool_result_id)
                                         
                                         yield {
                                             "type": "message",
@@ -548,107 +446,6 @@ Be thorough but concise, and always explain the business impact of technical iss
                                         "streaming": False
                                     }
             
-            # Send final completion signal
-            yield {
-                "type": "message_complete",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-                            
-        except Exception as e:
-            logger.error(f"Error in chat stream: {e}")
-            yield {
-                "type": "error",
-                "content": f"An error occurred: {str(e)}",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-
-    async def chat_stream(self, message: str, conversation_id: str, system_prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """Stream chat response with proper message streaming"""
-        try:
-            # Set system prompt if provided
-            if system_prompt:
-                self.set_system_prompt(conversation_id, system_prompt)
-            
-            agent = self.get_or_create_agent(conversation_id)
-            
-            # Create thread config for this conversation
-            config = {"configurable": {"thread_id": conversation_id}}
-            
-            accumulated_content = ""
-            
-            # Stream the response
-            # Always include system prompt as a system message to ensure instructions are applied
-            system_prompt_effective = self.get_system_prompt(conversation_id)
-            input_messages = [("system", system_prompt_effective), ("user", message)]
-
-            async for chunk in agent.astream(
-                {"messages": input_messages},
-                config=config
-            ):
-                # Process different types of chunks
-                if "agent" in chunk:
-                    agent_data = chunk["agent"]
-                    if "messages" in agent_data:
-                        for msg in agent_data["messages"]:
-                            if hasattr(msg, 'content') and msg.content:
-                                # Stream content incrementally
-                                content = str(msg.content)
-                                
-                                # For streaming, we want to send incremental updates
-                                if content != accumulated_content:
-                                    accumulated_content = content
-                                    yield {
-                                        "type": "message",
-                                        "content": content,
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                        "streaming": True
-                                    }
-                
-                elif "tools" in chunk:
-                    tool_data = chunk["tools"]
-                    if "messages" in tool_data:
-                        for msg in tool_data["messages"]:
-                            if hasattr(msg, 'content') and msg.content:
-                                # Format tool result for display
-                                try:
-                                    content = msg.content
-                                    # If dict → pretty JSON; if JSON string → parse then pretty; else pass through as-is
-                                    if isinstance(content, dict):
-                                        # For HTML tables, pass through directly
-                                        if any(key in content for key in ['html', 'table', 'content']):
-                                            out = content.get('html') or content.get('table') or content.get('content') or json.dumps(content, indent=2)
-                                        else:
-                                            out = json.dumps(content, indent=2)
-                                    elif isinstance(content, str):
-                                        # Check if it's HTML table content
-                                        if content.strip().startswith('<table') or content.strip().startswith('<!DOCTYPE') or '<html>' in content:
-                                            out = content
-                                        elif content[:1] in ['{', '[']:
-                                            try:
-                                                parsed = json.loads(content)
-                                                out = json.dumps(parsed, indent=2)
-                                            except:
-                                                out = content
-                                        else:
-                                            out = content
-                                    else:
-                                        out = str(content)
-                                    
-                                    yield {
-                                        "type": "message", 
-                                        "content": f"\n\n{out}",
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                        "tool_result": True
-                                    }
-                                except Exception:
-                                    yield {
-                                        "type": "message",
-                                        "content": f"\n\n{str(msg.content)}",
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                        "tool_result": True
-                                    }
-            
-            # Send final completion signal
             yield {
                 "type": "message_complete",
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -668,26 +465,18 @@ chatbot = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan manager"""
     global chatbot
-    
     logger.info("Starting etcd Analyzer MCP Client...")
-    
-    # Initialize MCP client
     connected = await mcp_client.connect()
     if connected:
         logger.info("etcd Analyzer MCP Client connected successfully")
-        # Initialize chatbot
         chatbot = ChatBot(mcp_client)
     else:
         logger.warning("Failed to connect to MCP server, continuing with limited functionality")
-        chatbot = ChatBot(mcp_client)  # Create anyway for graceful degradation
-    
+        chatbot = ChatBot(mcp_client)
     yield
-    
     logger.info("Shutting down etcd Analyzer MCP Client...")
 
-# Create FastAPI app
 app = FastAPI(
     title="etcd Analyzer MCP Client",
     description="AI-powered chat interface for OpenShift etcd performance analysis",
@@ -695,7 +484,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -704,7 +492,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve the web UI HTML
 HTML_FILE_PATH = os.path.join(os.path.dirname(__file__), "webroot", "etcd_analyzer_mcp_llm.html")
 
 @app.get("/", include_in_schema=False)
@@ -719,10 +506,8 @@ async def serve_ui_html():
         return FileResponse(HTML_FILE_PATH, media_type="text/html")
     raise HTTPException(status_code=404, detail="etcd_analyzer_mcp_llm.html not found")
 
-# Health endpoints
 @app.get("/api/mcp/health", response_model=HealthResponse)
 async def mcp_health_check():
-    """MCP connectivity health check endpoint"""
     health_data = await mcp_client.check_mcp_connectivity_health()
     return HealthResponse(
         status=health_data["status"],
@@ -732,7 +517,6 @@ async def mcp_health_check():
 
 @app.get("/api/etcd/health", response_model=HealthResponse)
 async def etcd_health_check():
-    """etcd analyzer health check endpoint"""
     health_data = await mcp_client.check_etcd_analyzer_health()
     return HealthResponse(
         status=health_data["status"],
@@ -742,7 +526,6 @@ async def etcd_health_check():
 
 @app.get("/api/tools")
 async def list_tools():
-    """List available MCP tools"""
     return {
         "tools": mcp_client.available_tools,
         "count": len(mcp_client.available_tools)
@@ -750,28 +533,21 @@ async def list_tools():
 
 @app.post("/api/tools/{tool_name}")
 async def call_tool_direct(tool_name: str, params: Dict[str, Any] = None):
-    """Direct tool call endpoint"""
     try:
         result = await mcp_client.call_tool(tool_name, params or {})
         logger.info(f"Direct tool call result type: {type(result)}")
-        
-        # If the tool already returned a formatted string, return as is
         if isinstance(result, str):
             return result
-        # If the result is a dict with an error from the tool call, pass through
         if isinstance(result, dict) and result.get("error") and result.get("tool"):
             return result
-        
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/system-prompt")
 async def set_system_prompt(request: SystemPromptRequest):
-    """Set system prompt for a conversation"""
     if not chatbot:
         raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
     try:
         chatbot.set_system_prompt(request.conversation_id, request.system_prompt)
         return {
@@ -784,10 +560,8 @@ async def set_system_prompt(request: SystemPromptRequest):
 
 @app.get("/api/system-prompt/{conversation_id}")
 async def get_system_prompt(conversation_id: str):
-    """Get current system prompt for a conversation"""
     if not chatbot:
         raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
     try:
         system_prompt = chatbot.get_system_prompt(conversation_id)
         return {
@@ -800,17 +574,13 @@ async def get_system_prompt(conversation_id: str):
 
 @app.delete("/api/system-prompt/{conversation_id}")
 async def reset_system_prompt(conversation_id: str):
-    """Reset system prompt to default for a conversation"""
     if not chatbot:
         raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
     try:
         if conversation_id in chatbot.conversation_system_prompts:
             del chatbot.conversation_system_prompts[conversation_id]
-        # Remove existing conversation to recreate with default prompt
         if conversation_id in chatbot.conversations:
             del chatbot.conversations[conversation_id]
-        
         return {
             "status": "success",
             "message": f"System prompt reset to default for conversation {conversation_id}",
@@ -821,14 +591,12 @@ async def reset_system_prompt(conversation_id: str):
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint with proper message streaming"""
     if not chatbot:
         raise HTTPException(status_code=503, detail="Chatbot not initialized")
     
     async def generate():
         try:
             async for chunk in chatbot.chat_stream(request.message, request.conversation_id, request.system_prompt):
-                # Format as Server-Sent Events
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
             error_chunk = {
@@ -838,7 +606,6 @@ async def chat_stream(request: ChatRequest):
             }
             yield f"data: {json.dumps(error_chunk)}\n\n"
         
-        # Send final completion signal
         completion_chunk = {
             "type": "stream_end",
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -852,26 +619,21 @@ async def chat_stream(request: ChatRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Content-Type": "text/event-stream",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering
+            "X-Accel-Buffering": "no"
         }
     )
 
 @app.post("/chat")
 async def chat_simple(request: ChatRequest):
-    """Simple chat endpoint (non-streaming)"""
     if not chatbot:
         raise HTTPException(status_code=503, detail="Chatbot not initialized")
-    
     responses = []
     async for chunk in chatbot.chat_stream(request.message, request.conversation_id, request.system_prompt):
         responses.append(chunk)
-    
     return {"responses": responses}
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Run the server
     uvicorn.run(
         "etcd_analyzer_client_chat:app",
         host="0.0.0.0",

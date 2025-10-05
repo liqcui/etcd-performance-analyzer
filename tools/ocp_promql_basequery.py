@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 import json
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 import pytz
 import os
 
@@ -323,7 +323,13 @@ class PrometheusBaseQuery:
         for fb in self.fallback_urls:
             try:
                 url = f"{fb.rstrip('/')}{api_path}"
-                self.logger.warning(f"Trying Prometheus fallback URL: {fb}")
+                parsed = urlparse(fb)
+                host = parsed.hostname or ''
+                # Skip fallback if hostname is not resolvable to avoid DNS errors outside the cluster
+                if host and not await self._host_resolvable(host):
+                    self.logger.info(f"Skipping Prometheus fallback URL (unresolvable host): {fb}")
+                    continue
+                self.logger.info(f"Trying Prometheus fallback URL: {fb}")
                 async with self.session.get(url, params=params) as response:
                     response_text = await response.text()
                     if response.status == 200:
@@ -348,6 +354,16 @@ class PrometheusBaseQuery:
             except Exception as ex:
                 self.logger.warning(f"Fallback URL unexpected error: {fb} error={ex}")
         return None
+
+    async def _host_resolvable(self, host: str) -> bool:
+        """Return True if the hostname can be resolved, False otherwise."""
+        try:
+            loop = asyncio.get_running_loop()
+            # Use getaddrinfo via loop for non-blocking DNS resolution
+            await loop.getaddrinfo(host, None)
+            return True
+        except Exception:
+            return False
     
     def _extract_metric_values(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract metric values from Prometheus result"""

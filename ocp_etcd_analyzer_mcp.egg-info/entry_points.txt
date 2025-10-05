@@ -1,2 +1,0 @@
-[console_scripts]
-ocp-etcd-mcp = ocp_etcd_analyzer_mcp_server:main
