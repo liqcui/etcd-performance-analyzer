@@ -178,8 +178,8 @@ class MCPClient:
                                 if tool_name in ["get_server_health"]:
                                     return json_data
                                 else:
-                                    # return json_to_html_table(json_data)
-                                    return json_data
+                                    return json_to_html_table(json_data)
+                                    # return json_data
                             else:
                                 return content_text
 
@@ -318,6 +318,7 @@ class ChatBot:
 - OpenShift cluster troubleshooting and performance optimization
 - Distributed systems analysis and debugging
 - Performance metrics interpretation and correlation
+- Be able to explain metrics and typical scenario that used for metrics
 
 When analyzing etcd data:
 1. Focus on performance bottlenecks, health issues, and optimization opportunities
