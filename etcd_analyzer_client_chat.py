@@ -178,7 +178,8 @@ class MCPClient:
                                 if tool_name in ["get_server_health"]:
                                     return json_data
                                 else:
-                                    return json_to_html_table(json_data)
+                                    # return json_to_html_table(json_data)
+                                    return json_data
                             else:
                                 return content_text
 
@@ -327,6 +328,7 @@ When analyzing etcd data:
 6. Prioritize critical issues that affect cluster stability
 
 Always structure your responses with:
+- Explain metrics and typical scenario that used for metrics
 - Executive summary of findings
 - Detailed technical analysis
 - Specific recommendations with priority levels

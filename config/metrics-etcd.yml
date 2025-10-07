@@ -212,6 +212,7 @@ metrics:
     category: disk_compact_defrag
     description: "Cumulative defragmentation duration"
 
+
    #disk_wal_fsync
   - name: disk_wal_fsync_seconds_duration_p99
     title: "disk_wal_fsync_seconds_duration_p99"
@@ -275,23 +276,34 @@ metrics:
     category: disk_backend_commit
 
   #network_io
+  - name: network_io_peer2peer_rtt_latency_p99
+    title: "network-io-peer2peer-rtt-latency-p99"
+    expr: 'histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket{namespace="openshift-etcd",pod=~".*"}[2m]))'
+    unit: seconds
+    description: "Peer round-trip time P99 latency"
+    category: network_io
+
   - name: network_io_container_network_rx
-    title: "network_io_container_network_rx"
+    title: "network-io-container-network-rx"
     expr: 'sum(rate(container_network_receive_bytes_total{ namespace=~"openshift-etcd.*"}[2m])) BY (namespace, pod)'
     unit: bytes_per_second
+    description: "Container network receive bytes per second"
     category: network_io
 
   - name: network_io_container_network_tx
     title: "network_io_container_network_tx"
     expr: 'sum(rate(container_network_transmit_bytes_total{ namespace=~"openshift-etcd.*"}[2m])) BY (namespace, pod)'
     unit: bytes_per_second
+    description: "Container network transmit bytes per second"
     category: network_io
 
-  - name: network_io_peer2peer_latency_p99
-    title: "network_io_peer2peer_latency_p99"
-    expr: 'histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket{namespace="openshift-etcd",pod=~".*"}[2m]))'
-    unit: seconds
+  - name: etcd_network_active_peers  
+    title: "etcd_network_active_peers"
+    expr: 'etcd_network_active_peers'
+    unit: count
+    description: "Number of active peers in the etcd cluster"    
     category: network_io
+
 
   - name: network_io_network_peer_received_bytes
     title: "network_io_peer_network_traffic_rx"
@@ -305,64 +317,74 @@ metrics:
     unit: bytes_per_second
     category: network_io
 
-  - name: network_io_network_client_grpc_received_bytes
-    title: "network_io_grpc_network_traffic_rx"
+  - name: network_io_etcd_in_c2s_network_client_grpc_received_bytes
+    title: "network_io_etcd_in_c2s_network_client_grpc_received_bytes"
     expr: 'rate(etcd_network_client_grpc_received_bytes_total{namespace="openshift-etcd",pod=~".*"}[2m])'
     unit: bytes_per_second
+    description: "gRPC RX bytes per second"
     category: network_io
 
-  - name: network_io_network_client_grpc_sent_bytes
-    title: "network_io_grpc_network_traffic_tx"
+  - name: network_io_etcd_out_s2c_network_client_grpc_sent_bytes
+    title: "network_io_etcd_out_s2c_network_client_grpc_sent_bytes"
     expr: 'rate(etcd_network_client_grpc_sent_bytes_total{namespace="openshift-etcd",pod=~".*"}[2m])'
     unit: bytes_per_second
+    description: "gRPC RX bytes per second"
     category: network_io
 
   - name: network_io_node_network_rx_utilization
     title: "network_io_node_network_rx_utilization"
     expr: 'rate(node_network_receive_bytes_total{instance=~".*",device=~".*"}[2m]) * 8'
     unit: bits_per_second
+    description: "Node RX bytes per second"
     category: network_io
   
   - name: network_io_node_network_tx_utilization
     title: "network_io_node_network_tx_utilization"
     expr: 'rate(node_network_transmit_bytes_total{instance=~".*",device=~".*"}[5m]) * 8'
     unit: bits_per_second
+    description: "Node RX bytes per second"
     category: network_io
   
   - name: network_io_node_network_rx_package
     title: "network_io_node_network_rx_package"
     expr: 'rate(node_network_receive_packets_total{instance=~".*",device=~".*"}[5m])'
     unit: packets_per_second
+    description: "Node RX packets per second"
     category: network_io
 
   - name: network_io_node_network_tx_package
     title: "network_io_node_network_tx_package"
     expr: 'rate(node_network_transmit_packets_total{instance=~".*",device=~".*"}[5m])'
     unit: packets_per_second
+    description: "Node TX packets per second"
     category: network_io
     
   - name: network_io_node_network_rx_drop
     title: "network_io_node_network_rx_drop"
     expr: 'topk(10, rate(node_network_receive_drop_total{instance=~".*"}[5m]))'
     unit: packets_per_second
+    description: "Node RX drops per second"
     category: network_io
     
   - name: network_io_node_network_tx_drop
     title: "network_io_node_network_tx_drop"
     expr: 'topk(10,rate(node_network_transmit_drop_total{instance=~".*"}[5m]))'
     unit: packets_per_second
+    description: "Node TX drops per second"
     category: network_io
 
   - name: network_io_grpc_active_watch_streams
     title: "network_io_grpc_active_watch_streams"
     expr: 'sum(grpc_server_started_total{namespace="openshift-etcd",grpc_service="etcdserverpb.Watch",grpc_type="bidi_stream"}) - sum(grpc_server_handled_total{namespace="openshift-etcd",grpc_service="etcdserverpb.Watch",grpc_type="bidi_stream"})'
     unit: count
+    description: "Number of active watch streams"
     category: network_io
 
   - name: network_io_grpc_active_lease_streams
     title: "network_io_grpc_active_lease_streams"
     expr: 'sum(grpc_server_started_total{namespace="openshift-etcd",grpc_service="etcdserverpb.Lease",grpc_type="bidi_stream"}) - sum(grpc_server_handled_total{namespace="openshift-etcd",grpc_service="etcdserverpb.Lease",grpc_type="bidi_stream"})'
     unit: count
+    description: "Number of active lease streams"
     category: network_io
     
   #disk_io

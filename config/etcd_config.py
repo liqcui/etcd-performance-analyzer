@@ -248,47 +248,6 @@ class ETCDConfig:
             'timing_metrics': timing_metrics
         }
 
-    def load_disk_metrics_from_file(self, disk_config_path: str) -> bool:
-        """Load additional disk metrics from separate YAML file"""
-        try:
-            if not os.path.exists(disk_config_path):
-                self.logger.warning(f"Disk metrics file not found: {disk_config_path}")
-                return False
-            
-            with open(disk_config_path, 'r') as f:
-                disk_data = yaml.safe_load(f)
-            
-            # Expect metrics to be a list directly or under a 'metrics' key
-            if isinstance(disk_data, list):
-                disk_metrics = disk_data
-            elif isinstance(disk_data, dict) and 'metrics' in disk_data:
-                disk_metrics = disk_data['metrics']
-            else:
-                disk_metrics = disk_data if isinstance(disk_data, list) else []
-            
-            # Add to existing metrics
-            for metric in disk_metrics:
-                if not all(key in metric for key in ['name', 'expr', 'category']):
-                    self.logger.warning(f"Invalid disk metric configuration: {metric}")
-                    continue
-                
-                # Process variables in expression
-                processed_expr = self._process_expression_variables(metric['expr'])
-                metric['expr'] = processed_expr
-                
-                # Add to raw metrics list
-                self.raw_metrics.append(metric)
-            
-            # Reprocess all metrics
-            self._process_metrics()
-            
-            self.logger.info(f"Loaded {len(disk_metrics)} additional disk metrics from {disk_config_path}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error loading disk metrics from {disk_config_path}: {e}")
-            return False
-
     def validate_config(self) -> bool:
         """Validate the loaded configuration"""
         if not self.metrics_config:

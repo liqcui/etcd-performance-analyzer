@@ -863,7 +863,16 @@ def json_to_html_table(json_data: Union[Dict[str, Any], str], compact: bool = Tr
                 table_title = priority_table.replace('_', ' ').title()
                 
                 # Special titles for different data types
-                if data_type == 'deep_drive':
+                # In json_to_html_table function, add to the title_mapping for general_info:
+                if data_type == 'general_info':
+                    title_mapping = {
+                        'pod_performance': 'Pod Performance Details',
+                        'node_performance': 'Node Performance Details',
+                        'metrics_overview': 'Metrics Overview',
+                        'resource_objects': 'API Server Storage Objects (Top 20)'
+                    }
+                    table_title = title_mapping.get(priority_table, table_title)                
+                elif data_type == 'deep_drive':
                     title_mapping = {
                         'test_overview': 'Test Overview',
                         'analysis_summary': 'Analysis Summary',

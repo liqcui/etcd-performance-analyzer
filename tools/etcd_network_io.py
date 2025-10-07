@@ -46,17 +46,24 @@ class NetworkIOCollector:
                     'duration': duration
                 }
 
-            # Partition metrics by level based on standardized names
+            # Partition metrics by level based on standardized names and description
             pod_metric_names = set()
             node_metric_names = set()
             cluster_metric_names = set()
 
             for m in network_metrics:
                 name = m.get('name', '')
-                if name.startswith('network_io_container_') or \
-                   name.startswith('network_io_network_peer_') or \
-                   name.startswith('network_io_network_client_') or \
-                   name == 'network_io_peer2peer_latency_p99':
+                description = m.get('description', '').lower()
+                
+                # Check if metric has pod-level labels or description indicates pod-level
+                if (name.startswith('network_io_container_') or 
+                    name.startswith('network_io_network_peer_') or 
+                    name.startswith('network_io_network_client_') or 
+                    name.startswith('network_io_etcd_in_') or
+                    name.startswith('network_io_etcd_out_') or
+                    name == 'network_io_peer2peer_rtt_latency_p99' or
+                    name == 'etcd_network_active_peers' or
+                    'pod' in description or 'peer' in description):
                     pod_metric_names.add(name)
                 elif name.startswith('network_io_node_network_'):
                     node_metric_names.add(name)
@@ -66,7 +73,7 @@ class NetworkIOCollector:
                     # Fallback: place unknown ones into cluster level
                     cluster_metric_names.add(name)
 
-            # Build dictionaries {name: {expr, unit, title}}
+            # Build dictionaries {name: {expr, unit, title, description}}
             def to_dict(names_set):
                 d = {}
                 for m in network_metrics:
@@ -74,7 +81,8 @@ class NetworkIOCollector:
                         d[m['name']] = {
                             'expr': m.get('expr', ''),
                             'unit': m.get('unit', 'unknown'),
-                            'title': m.get('title', m.get('name'))
+                            'title': m.get('title', m.get('name')),
+                            'description': m.get('description', '')
                         }
                 return d
 
@@ -88,8 +96,6 @@ class NetworkIOCollector:
                 'duration': duration,
                 'data': {
                     'pods_metrics': {},
-                    # Backward compatibility alias (will be removed later)
-                    'container_metrics': {},
                     'node_metrics': {},
                     'cluster_metrics': {}
                 },
@@ -110,10 +116,7 @@ class NetworkIOCollector:
                 
                 # Collect pod metrics
                 pods_result = await self._collect_pod_metrics(prom, duration, pod_metrics)
-                # Prefer new key
                 results['data']['pods_metrics'] = pods_result
-                # Maintain old key for compatibility
-                results['data']['container_metrics'] = pods_result
                 
                 # Collect node metrics
                 node_result = await self._collect_node_metrics(prom, duration, node_metrics)
@@ -160,25 +163,51 @@ class NetworkIOCollector:
                 if result['status'] == 'success':
                     pod_stats = {}
                     
-                    # Process each series
-                    for series in result.get('series_data', []):
-                        labels = series['labels']
-                        stats = series['statistics']
-                        
-                        pod_name = labels.get('pod', 'unknown')
-                        node_name = self._resolve_node_name(pod_name)
-                        
-                        pod_stats[pod_name] = {
-                            'avg': stats.get('avg'),
-                            'max': stats.get('max'),
-                            'node': node_name
-                        }
+                    # Special handling for etcd_network_active_peers
+                    if metric_name == 'etcd_network_active_peers':
+                        # Process each series
+                        for series in result.get('series_data', []):
+                            labels = series['labels']
+                            stats = series['statistics']
+                            
+                            pod_name = labels.get('pod', 'unknown')
+                            node_name = self._resolve_node_name(pod_name)
+                            local_member = labels.get('Local', 'unknown')
+                            remote_member = labels.get('Remote', 'unknown')
+                            
+                            # Create a unique key for each pod-local-remote combination
+                            key = f"{pod_name}_{local_member}_{remote_member}"
+                            
+                            pod_stats[key] = {
+                                'pod': pod_name,
+                                'node': node_name,
+                                'local': local_member,
+                                'remote': remote_member,
+                                'avg': stats.get('avg'),
+                                'max': stats.get('max'),
+                                'latest': stats.get('latest')
+                            }
+                    else:
+                        # Standard processing for other pod metrics
+                        for series in result.get('series_data', []):
+                            labels = series['labels']
+                            stats = series['statistics']
+                            
+                            pod_name = labels.get('pod', 'unknown')
+                            node_name = self._resolve_node_name(pod_name)
+                            
+                            pod_stats[pod_name] = {
+                                'avg': stats.get('avg'),
+                                'max': stats.get('max'),
+                                'node': node_name
+                            }
                     
                     results[metric_name] = {
                         'status': 'success',
                         'pods': pod_stats,
                         'unit': mconf.get('unit', 'unknown'),
                         'title': mconf.get('title', metric_name),
+                        'description': mconf.get('description', ''),
                         'query': query
                     }
                 else:
@@ -188,7 +217,7 @@ class NetworkIOCollector:
                     }
                     
             except Exception as e:
-                self.logger.error(f"Error collecting container metric {metric_name}: {e}")
+                self.logger.error(f"Error collecting pod metric {metric_name}: {e}")
                 results[metric_name] = {
                     'status': 'error',
                     'error': str(e)
@@ -252,6 +281,7 @@ class NetworkIOCollector:
                         'nodes': node_stats,
                         'unit': mconf.get('unit', 'unknown'),
                         'title': mconf.get('title', metric_name),
+                        'description': mconf.get('description', ''),
                         'query': query
                     }
                 else:
@@ -288,6 +318,7 @@ class NetworkIOCollector:
                         'latest': overall_stats.get('latest'),
                         'unit': mconf.get('unit', 'unknown'),
                         'title': mconf.get('title', metric_name),
+                        'description': mconf.get('description', ''),
                         'query': query
                     }
                 else:
@@ -363,7 +394,7 @@ class NetworkIOCollector:
                 'duration': duration,
                 'network_health': 'healthy',
                 'summary': {
-                    'container_metrics_count': len([m for m in data.get('pods_metrics', data.get('container_metrics', {})).values() if m.get('status') == 'success']),
+                    'pods_metrics_count': len([m for m in data.get('pods_metrics', {}).values() if m.get('status') == 'success']),
                     'node_metrics_count': len([m for m in data.get('node_metrics', {}).values() if m.get('status') == 'success']),
                     'cluster_metrics_count': len([m for m in data.get('cluster_metrics', {}).values() if m.get('status') == 'success']),
                     'total_etcd_pods': len(self._node_mappings.get('pod_to_node', {})),
@@ -373,9 +404,9 @@ class NetworkIOCollector:
             }
             
             # Check for high peer latency
-            container_metrics = data.get('pods_metrics', data.get('container_metrics', {}))
-            if 'peer2peer_latency_p99' in container_metrics:
-                latency_data = container_metrics['peer2peer_latency_p99']
+            pods_metrics = data.get('pods_metrics', {})
+            if 'network_io_peer2peer_rtt_latency_p99' in pods_metrics:
+                latency_data = pods_metrics['network_io_peer2peer_rtt_latency_p99']
                 if latency_data.get('status') == 'success':
                     for pod_name, pod_data in latency_data.get('pods', {}).items():
                         avg_latency = pod_data.get('avg', 0)
