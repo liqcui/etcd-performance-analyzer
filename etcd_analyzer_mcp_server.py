@@ -1115,16 +1115,26 @@ def main():
             sys.exit(1)
     
     try:
-        # Check if we're already in an event loop
+        # Prefer using an existing running loop when present; otherwise create and manage one explicitly.
+        loop = None
         try:
             loop = asyncio.get_running_loop()
-            logger.warning("Already running in an event loop. Creating new task.")
-            # If we're already in a loop, create a task instead
-            task = loop.create_task(run_server())
-            return task
         except RuntimeError:
-            # No event loop running, safe to use asyncio.run
-            asyncio.run(run_server())
+            # No running loop in this thread
+            loop = None
+
+        if loop and loop.is_running():
+            logger.warning("Already running in an event loop. Creating new task.")
+            return loop.create_task(run_server())
+        else:
+            # Explicitly create and manage an event loop to avoid RuntimeError noise on some platforms
+            new_loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(run_server())
+            finally:
+                new_loop.close()
+                asyncio.set_event_loop(None)
             
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")

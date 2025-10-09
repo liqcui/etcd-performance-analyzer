@@ -109,9 +109,18 @@ class MCPClient:
                     logger.info(f"Session ID: {session_id}")
                     tools_result = await session.list_tools()
                     logger.info(f"Discovered {len(tools_result.tools)} MCP tools")
-            
+
+                    # Rebuild tool list idempotently to avoid duplicate growth across reconnects
+                    new_available_tools: List[Dict[str, Any]] = []
+                    seen_tool_names = set()
+
                     for tool in tools_result.tools:
-                        logger.info(f"Tool discovered: {tool.name}")
+                        name = getattr(tool, "name", None)
+                        if not name or name in seen_tool_names:
+                            continue
+                        seen_tool_names.add(name)
+
+                        logger.info(f"Tool discovered: {name}")
                         input_schema = {}
                         try:
                             if tool.inputSchema:
@@ -123,13 +132,15 @@ class MCPClient:
                                     input_schema = tool.inputSchema.dict()
                         except Exception:
                             input_schema = {}
-                        
-                        self.available_tools.append({
-                            "name": tool.name,
-                            "description": tool.description,
+
+                        new_available_tools.append({
+                            "name": name,
+                            "description": getattr(tool, "description", ""),
                             "input_schema": input_schema
                         })
-                    
+
+                    # Replace existing tools rather than appending to prevent growth
+                    self.available_tools = new_available_tools
                     self._create_langchain_tools()
                     logger.info(f"Loaded {len(self.available_tools)} MCP tools")
             return True
